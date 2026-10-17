@@ -1,0 +1,3 @@
+# Copy this file to `.dev.vars` for local development (`npx wrangler dev`)
+API_KEY="sk-freebuff-secret-key"
+ADMIN_PASSWORD="admin"
