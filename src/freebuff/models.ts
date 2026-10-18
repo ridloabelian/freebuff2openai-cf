@@ -199,13 +199,22 @@ export const DEFAULT_MODEL_DEF: FreebuffModelDef = FREEBUFF_MODELS[0];
 
 /**
  * Resolve a requested model string to its `FreebuffModelDef`.
- * Supports exact match (`provider/model`), short alias (`model`), or default fallback.
+ * Supports exact match (`provider/model`), short alias (`model`),
+ * Cloudflare AI Gateway Custom Provider prefixes (`custom-<slug>/...` or `freebuff/...`),
+ * or default fallback.
  */
 export function resolveFreebuffModel(
   requested?: string | null,
   defaultModelId = DEFAULT_FREEBUFF_MODEL_ID
 ): FreebuffModelDef {
-  const target = (requested || defaultModelId || DEFAULT_FREEBUFF_MODEL_ID).trim();
+  const rawTarget = (
+    requested ||
+    defaultModelId ||
+    DEFAULT_FREEBUFF_MODEL_ID
+  ).trim();
+
+  // Strip optional Cloudflare AI Gateway Custom Provider prefix (e.g. "custom-freebuff/..." or "freebuff/...")
+  const target = rawTarget.replace(/^(?:custom-[a-z0-9_-]+|freebuff)\//i, "");
 
   // 1. Exact ID match
   const exact = FREEBUFF_MODELS.find((m) => m.id === target);
@@ -225,7 +234,7 @@ export function resolveFreebuffModel(
   }
 
   throw new Error(
-    `Unsupported Freebuff model: "${target}". Call GET /v1/models for the list of supported models.`
+    `Unsupported Freebuff model: "${rawTarget}". Call GET /v1/models for the list of supported models.`
   );
 }
 

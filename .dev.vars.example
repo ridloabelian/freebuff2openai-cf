@@ -1,3 +1,11 @@
 # Copy this file to `.dev.vars` for local development (`npx wrangler dev`)
 API_KEY="sk-freebuff-secret-key"
 ADMIN_PASSWORD="admin"
+
+# Optional: Cloudflare AI Gateway Integration
+# AI_GATEWAY_CODEBUFF_URL="https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/custom-codebuff"
+# AI_GATEWAY_FALLBACK_URL="https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/compat/chat/completions"
+# AI_GATEWAY_FALLBACK_MODEL="workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# AI_GATEWAY_FALLBACK_API_KEY=""
+# CF_AIG_TOKEN=""
+

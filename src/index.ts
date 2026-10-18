@@ -30,7 +30,7 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-API-Key, X-Admin-Password, OpenAI-Beta",
+    "Content-Type, Authorization, X-API-Key, X-Admin-Password, OpenAI-Beta, cf-aig-authorization, cf-aig-cache-ttl, cf-aig-skip-cache, cf-aig-metadata, cf-aig-custom-cost, cf-aig-event-id, cf-aig-collect-log",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -117,6 +117,74 @@ function verifyClientApiKey(request: Request, env: Env): boolean {
 }
 
 /**
+ * Forward a chat completion request to Cloudflare AI Gateway fallback endpoint
+ * (`env.AI_GATEWAY_FALLBACK_URL`) when all Freebuff accounts are unavailable or fail.
+ */
+async function forwardToAiGatewayFallback(
+  body: OpenAIChatCompletionRequest,
+  env: Env,
+  reason: string
+): Promise<Response | null> {
+  const fallbackUrl = env.AI_GATEWAY_FALLBACK_URL?.trim();
+  if (!fallbackUrl) {
+    return null;
+  }
+
+  const targetUrl =
+    fallbackUrl.endsWith("/chat/completions") || fallbackUrl.endsWith("/ai/run")
+      ? fallbackUrl
+      : `${fallbackUrl.replace(/\/+$/, "")}/chat/completions`;
+
+  const fallbackPayload: OpenAIChatCompletionRequest = {
+    ...body,
+    model: env.AI_GATEWAY_FALLBACK_MODEL?.trim() || body.model,
+  };
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: body.stream ? "text/event-stream" : "application/json",
+  };
+
+  const providerApiKey = env.AI_GATEWAY_FALLBACK_API_KEY?.trim();
+  if (providerApiKey) {
+    headers["Authorization"] = providerApiKey.startsWith("Bearer ")
+      ? providerApiKey
+      : `Bearer ${providerApiKey}`;
+  }
+
+  const cfAigToken = env.CF_AIG_TOKEN?.trim();
+  if (cfAigToken) {
+    headers["cf-aig-authorization"] = cfAigToken.startsWith("Bearer ")
+      ? cfAigToken
+      : `Bearer ${cfAigToken}`;
+  }
+
+  headers["cf-aig-metadata"] = JSON.stringify({
+    source: "freebuff2openai-cf-fallback",
+    requested_model: body.model || "default",
+    fallback_model: fallbackPayload.model || "default",
+    fallback_reason: reason.slice(0, 120),
+  });
+
+  const res = await fetch(targetUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(fallbackPayload),
+  });
+
+  const responseHeaders = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) {
+    responseHeaders.set(k, v);
+  }
+  responseHeaders.set("X-Freebuff-Fallback", "cloudflare-ai-gateway");
+
+  return new Response(res.body, {
+    status: res.status,
+    headers: responseHeaders,
+  });
+}
+
+/**
  * Handle `GET /v1/models`
  */
 async function handleModelsRequest(
@@ -198,6 +266,15 @@ async function handleChatCompletionsRequest(
   const isStream = Boolean(body.stream);
   const pool = await getPoolState(env);
   if (pool.accounts.length === 0) {
+    const fallbackRes = await forwardToAiGatewayFallback(
+      body,
+      env,
+      "no_freebuff_accounts_connected"
+    ).catch(() => null);
+    if (fallbackRes) {
+      return fallbackRes;
+    }
+
     return openAIErrorResponse(
       "No Freebuff accounts configured in FREEBUFF_KV. Open /setup in your browser to connect your Freebuff account or paste an authToken.",
       401,
@@ -253,11 +330,16 @@ async function handleChatCompletionsRequest(
         payloadRunId: run.payloadRunId,
       });
 
-      // 5. Call upstream `/api/v1/chat/completions`
+      // 5. Call upstream `/api/v1/chat/completions` (directly or via AI_GATEWAY_CODEBUFF_URL)
       const upstreamRes = await sendUpstreamChatCompletions(
         env,
         account.authToken,
-        upstreamPayload
+        upstreamPayload,
+        {
+          accountId: account.id,
+          agentId: modelDef.agent_id,
+          modelId: modelDef.id,
+        }
       );
 
       if (!upstreamRes.ok) {
@@ -344,6 +426,17 @@ async function handleChatCompletionsRequest(
     lastError instanceof Error
       ? lastError.message
       : "Unexpected error during Freebuff chat completion.";
+
+  // Optional automatic fallback to Cloudflare AI Gateway when all Freebuff accounts fail
+  const fallbackRes = await forwardToAiGatewayFallback(
+    body,
+    env,
+    finalMessage
+  ).catch(() => null);
+  if (fallbackRes) {
+    return fallbackRes;
+  }
+
   const finalStatus =
     lastError instanceof CodebuffUpstreamError ? lastError.status : 502;
   const finalCode =
@@ -357,6 +450,15 @@ async function handleChatCompletionsRequest(
     "upstream_api_error",
     finalCode
   );
+}
+
+/**
+ * Normalize API paths so both direct OpenAI clients and Cloudflare AI Gateway
+ * Custom Providers (with or without `/v1` or `/compat` prefixes) resolve cleanly.
+ */
+function normalizeApiPath(rawPath: string): string {
+  const trimmed = rawPath.replace(/\/+$/, "") || "/";
+  return trimmed.replace(/^(?:\/(?:v1|compat))+(\/|$)/, "/v1$1");
 }
 
 /**
@@ -378,6 +480,7 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+    const normalizedPath = normalizeApiPath(path);
 
     // 2. Route `/` or `/healthz` -> Health Check JSON
     if ((path === "/" || path === "/healthz") && request.method === "GET") {
@@ -387,13 +490,23 @@ export default {
       return jsonResponse({
         service: "freebuff2openai-cf",
         status: "ok",
-        version: "1.0.0",
+        version: "1.1.0",
         accounts_connected: count,
         default_model: env.DEFAULT_MODEL || DEFAULT_FREEBUFF_MODEL_ID,
+        ai_gateway: {
+          custom_provider_compatible: true,
+          outbound_codebuff_gateway_enabled: Boolean(
+            env.AI_GATEWAY_CODEBUFF_URL?.trim()
+          ),
+          fallback_gateway_enabled: Boolean(
+            env.AI_GATEWAY_FALLBACK_URL?.trim()
+          ),
+        },
         endpoints: {
           setup_ui: `${url.origin}/setup`,
           models: `${url.origin}/v1/models`,
           chat_completions: `${url.origin}/v1/chat/completions`,
+          ai_gateway_custom_provider_base_url: url.origin,
         },
       });
     }
@@ -403,17 +516,18 @@ export default {
       return handleSetupRequest(request, env);
     }
 
-    // 4. Route `/v1/models` (or `/models`) -> Model List
+    // 4. Route `/v1/models` (or `/models`, `/compat/models`, `/v1/v1/models`) -> Model List
     if (
-      (path === "/v1/models" || path === "/models") &&
+      (normalizedPath === "/v1/models" || path === "/models") &&
       request.method === "GET"
     ) {
       return handleModelsRequest(request, env);
     }
 
-    // 5. Route `/v1/chat/completions` (or `/chat/completions`) -> Chat Handler
+    // 5. Route `/v1/chat/completions` (or `/chat/completions`, `/compat/chat/completions`, `/v1/v1/chat/completions`) -> Chat Handler
     if (
-      (path === "/v1/chat/completions" || path === "/chat/completions") &&
+      (normalizedPath === "/v1/chat/completions" ||
+        path === "/chat/completions") &&
       request.method === "POST"
     ) {
       return handleChatCompletionsRequest(request, env, ctx);

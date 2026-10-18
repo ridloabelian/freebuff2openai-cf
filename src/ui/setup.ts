@@ -870,7 +870,7 @@ function renderSetupDashboard(
     </div>
 
     <!-- Supported Models & Quick Test -->
-    <div class="card" style="margin-bottom:0;">
+    <div class="card">
       <h2>Supported Models &amp; Quick API Test</h2>
       <p class="subtitle">Includes Direct Root Models and Gemini Child-Agent Free Models:</p>
       <div class="models-wrap" style="margin-bottom: 1.25rem;">
@@ -887,6 +887,41 @@ function renderSetupDashboard(
     "stream": true
   }'</pre>
     </div>
+
+    <!-- Cloudflare AI Gateway Collaboration -->
+    <div class="card" style="margin-bottom:0;">
+      <h2>
+        <span>Cloudflare AI Gateway Integration</span>
+        <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+          <span class="session-badge session-active">Custom Provider Ready</span>
+          <span class="session-badge ${env.AI_GATEWAY_CODEBUFF_URL?.trim() ? "session-active" : "session-idle"}">
+            Outbound Logging: ${env.AI_GATEWAY_CODEBUFF_URL?.trim() ? "Active" : "Off"}
+          </span>
+          <span class="session-badge ${env.AI_GATEWAY_FALLBACK_URL?.trim() ? "session-active" : "session-idle"}">
+            Auto-Fallback: ${env.AI_GATEWAY_FALLBACK_URL?.trim() ? "Active" : "Off"}
+          </span>
+        </div>
+      </h2>
+      <p class="subtitle">
+        Combine <code>freebuff2openai-cf</code> (Protocol Adapter &amp; Multi-Account Pool) with <strong>Cloudflare AI Gateway</strong> for centralized prompt logging, caching, rate limiting, and multi-provider fallbacks.
+      </p>
+
+      <label>1. Register as Custom Provider in Cloudflare AI Gateway (Slug: <code>freebuff</code>, Base URL below)</label>
+      <div class="copy-box">
+        <code id="aig-base-url-code">${escapeHtml(workerOrigin)}</code>
+        <button type="button" class="btn btn-outline btn-sm" onclick="copyAigBaseUrl()">Copy Origin URL</button>
+      </div>
+
+      <label>2. Call via Cloudflare AI Gateway Unified API (<code>/compat/chat/completions</code>)</label>
+      <pre class="code-snippet">curl https://gateway.ai.cloudflare.com/v1/&lt;CF_ACCOUNT_ID&gt;/&lt;GATEWAY_ID&gt;/compat/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -d '{
+    "model": "custom-freebuff/deepseek/deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "Hello via Cloudflare AI Gateway!"}],
+    "stream": true
+  }'</pre>
+    </div>
   </div>
 
   <script>
@@ -896,6 +931,13 @@ function renderSetupDashboard(
       const text = document.getElementById("base-url-code").innerText;
       navigator.clipboard.writeText(text).then(() => {
         alert("Copied OpenAI Base URL: " + text);
+      });
+    }
+
+    function copyAigBaseUrl() {
+      const text = document.getElementById("aig-base-url-code").innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        alert("Copied Custom Provider Base URL: " + text);
       });
     }
 

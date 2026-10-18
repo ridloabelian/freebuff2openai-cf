@@ -26,9 +26,21 @@ CODEBUFF_API_BASE_URL = "https://www.codebuff.com"
 ZEROCLICK_API_BASE_URL = "https://zeroclick.dev"
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
+# Optional Cloudflare AI Gateway Collaboration Variables:
+# - Route outbound Codebuff chat completions through AI Gateway for logging/analytics:
+#   AI_GATEWAY_CODEBUFF_URL = "https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/custom-codebuff"
+# - Automatic fallback to Cloudflare AI Gateway when all Freebuff accounts are busy/exhausted:
+#   AI_GATEWAY_FALLBACK_URL = "https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_ID>/compat/chat/completions"
+#   AI_GATEWAY_FALLBACK_MODEL = "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
 # ============================================================================
 # 3. Secrets (Set via CLI for Production, or in `.dev.vars` for Local Dev)
 # ============================================================================
 # Do NOT hardcode secrets here in production! Instead, run:
 #   npx wrangler secret put API_KEY
 #   npx wrangler secret put ADMIN_PASSWORD
+#
+# Optional AI Gateway Secrets (if using Authenticated AI Gateway or Fallback Provider Key):
+#   npx wrangler secret put CF_AIG_TOKEN
+#   npx wrangler secret put AI_GATEWAY_FALLBACK_API_KEY
+

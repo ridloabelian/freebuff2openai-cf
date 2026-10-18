@@ -6,6 +6,12 @@ export interface Env {
   CODEBUFF_API_BASE_URL?: string;
   ZEROCLICK_API_BASE_URL?: string;
   DEFAULT_MODEL?: string;
+  // Optional Cloudflare AI Gateway integration
+  AI_GATEWAY_CODEBUFF_URL?: string;
+  AI_GATEWAY_FALLBACK_URL?: string;
+  AI_GATEWAY_FALLBACK_MODEL?: string;
+  AI_GATEWAY_FALLBACK_API_KEY?: string;
+  CF_AIG_TOKEN?: string;
 }
 
 export interface FreebuffSessionState {

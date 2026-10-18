@@ -23,6 +23,10 @@ Unlike Docker or VPS-based proxies, `freebuff2openai-cf` runs entirely at the Cl
 - **OpenAI API Compatibility:**
   - `GET /v1/models` — Lists all supported Freebuff and Gemini models.
   - `POST /v1/chat/completions` — Supports both streaming (`stream: true`) and unary (`stream: false`) responses, `reasoning_content`, and `tools` / `tool_calls`.
+- **Cloudflare AI Gateway Native Collaboration:**
+  - **Custom Provider Ready:** Supports `custom-<slug>/<model>` prefixes (`custom-freebuff/deepseek/deepseek-v4-flash`) and normalized `/compat/chat/completions` & `/v1/chat/completions` routing.
+  - **Built-in AI Gateway Auto-Fallback:** Optionally forwards requests to Cloudflare AI Gateway (`AI_GATEWAY_FALLBACK_URL`) when all Freebuff accounts are busy or rate-limited.
+  - **Outbound Observability:** Optionally routes upstream Codebuff calls through AI Gateway (`AI_GATEWAY_CODEBUFF_URL`) with automatic `cf-aig-metadata` telemetry headers.
 
 ---
 
@@ -35,13 +39,13 @@ freebuff2openai-cf/
 ├── wrangler.toml
 ├── .dev.vars.example
 └── src/
-    ├── index.ts                # Worker entry point, CORS, & route dispatcher
+    ├── index.ts                # Worker entry point, CORS, AI Gateway fallback & route dispatcher
     ├── types.ts                # TypeScript interfaces (Env, Pool, Sessions, OpenAI)
     ├── kv.ts                   # Cloudflare KV multi-account pool & session-aware selector
     ├── freebuff/
     │   ├── auth.ts             # CLI device OAuth flow (/api/auth/cli/code & /status)
-    │   ├── models.ts           # Model registry, agent mappings, & validation payload
-    │   └── client.ts           # Session lifecycle, waiting room, ads, & agent-runs
+    │   ├── models.ts           # Model registry, custom-provider prefix parser & validation payload
+    │   └── client.ts           # Session lifecycle, waiting room, ads, agent-runs & AI Gateway telemetry
     ├── converters/
     │   └── openai.ts           # Buffy system prompt, SSE TransformStream, & accumulator
     └── ui/
@@ -141,6 +145,91 @@ curl https://freebuff2openai-cf.<your-subdomain>.workers.dev/v1/chat/completions
 
 ---
 
+## Collaborating with Cloudflare AI Gateway
+
+### `freebuff2openai-cf` vs. Cloudflare AI Gateway
+
+Both run on Cloudflare's edge network, but they solve **different layers** of the AI stack and are designed to work together:
+
+| Layer / Feature | `freebuff2openai-cf` (This Worker) | Cloudflare AI Gateway |
+| :--- | :--- | :--- |
+| **Primary Role** | **Protocol Adapter & Session Orchestrator** | **Observability, Caching & Multi-Provider Router** |
+| **What It Does** | Translates proprietary Freebuff/Codebuff internals (CLI OAuth, waiting-room polling, session locks, ad/streak warm-up, and `agent-runs` chains) into standard OpenAI `/v1/chat/completions`. | Sits in front of standard AI APIs to provide prompt/response logging, token analytics, response caching, rate limiting, and provider fallbacks. |
+| **Can It Talk to Freebuff Directly?** | **Yes** (purpose-built for Freebuff/Codebuff). | **No** (does not understand Freebuff sessions or `agent-runs`). |
+| **State Management** | Multi-account token & session pool in `FREEBUFF_KV`. | Managed analytics, cache storage, and dynamic routing rules. |
+
+```text
+[Client: Cursor / Cline / App]
+       │
+       ▼
+[Cloudflare AI Gateway]  ──(1. Primary: Custom Provider)──► [Worker: freebuff2openai-cf] ──► [Freebuff / Codebuff]
+       │
+       └──(2. Auto-Fallback if busy/error)──► [Workers AI / Google AI Studio / OpenRouter / OpenAI]
+```
+
+---
+
+### Mode 1: Put Cloudflare AI Gateway in Front of `freebuff2openai-cf` (Custom Provider)
+
+Register your deployed `freebuff2openai-cf` Worker as a **Custom Provider** in Cloudflare AI Gateway to get full prompt logging, caching, rate limiting, and dynamic routing:
+
+1. In the **Cloudflare Dashboard**, go to **AI > AI Gateway > Custom Providers** (or use the REST API) and create a provider:
+   - **Name:** `Freebuff Worker Proxy`
+   - **Slug:** `freebuff` (referenced as `custom-freebuff` in AI Gateway)
+   - **Base URL:** `https://freebuff2openai-cf.<your-subdomain>.workers.dev`
+2. Call `freebuff2openai-cf` through **AI Gateway's Unified API (`/compat/chat/completions`)**:
+   ```bash
+   curl https://gateway.ai.cloudflare.com/v1/<CF_ACCOUNT_ID>/<GATEWAY_ID>/compat/chat/completions \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_API_KEY" \
+     -d '{
+       "model": "custom-freebuff/deepseek/deepseek-v4-flash",
+       "messages": [{"role": "user", "content": "Hello via Cloudflare AI Gateway!"}],
+       "stream": true
+     }'
+   ```
+   *(Note: `freebuff2openai-cf` automatically strips `custom-<slug>/` prefixes from model IDs and normalizes `/compat` and `/v1` paths).*
+
+3. Or use the **Provider-Specific Endpoint** as your OpenAI SDK `baseURL`:
+   ```text
+   https://gateway.ai.cloudflare.com/v1/<CF_ACCOUNT_ID>/<GATEWAY_ID>/custom-freebuff/v1
+   ```
+
+---
+
+### Mode 2: Built-in Auto-Fallback from `freebuff2openai-cf` to Cloudflare AI Gateway
+
+If you connect your IDE/client directly to `freebuff2openai-cf`, you can configure `freebuff2openai-cf` to automatically fall back to Cloudflare AI Gateway whenever all Freebuff accounts in your KV pool are busy or fail:
+
+1. Configure `AI_GATEWAY_FALLBACK_URL` and `AI_GATEWAY_FALLBACK_MODEL` in [`wrangler.toml`](wrangler.toml):
+   ```toml
+   [vars]
+   AI_GATEWAY_FALLBACK_URL = "https://gateway.ai.cloudflare.com/v1/<CF_ACCOUNT_ID>/<GATEWAY_ID>/compat/chat/completions"
+   AI_GATEWAY_FALLBACK_MODEL = "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+   ```
+2. Set your fallback provider API key (and optional Authenticated AI Gateway token):
+   ```bash
+   npx wrangler secret put AI_GATEWAY_FALLBACK_API_KEY
+   npx wrangler secret put CF_AIG_TOKEN
+   ```
+   When triggered, responses include the header `X-Freebuff-Fallback: cloudflare-ai-gateway` and attach `cf-aig-metadata` with the fallback reason.
+
+---
+
+### Mode 3: Outbound Observability (`freebuff2openai-cf` $\rightarrow$ AI Gateway $\rightarrow$ Codebuff)
+
+To log and inspect the raw upstream calls that `freebuff2openai-cf` makes to `https://www.codebuff.com/api/v1/chat/completions` inside your Cloudflare AI Gateway dashboard:
+
+1. Create a Custom Provider in Cloudflare AI Gateway with slug `codebuff` and Base URL `https://www.codebuff.com`.
+2. Set `AI_GATEWAY_CODEBUFF_URL` in [`wrangler.toml`](wrangler.toml):
+   ```toml
+   [vars]
+   AI_GATEWAY_CODEBUFF_URL = "https://gateway.ai.cloudflare.com/v1/<CF_ACCOUNT_ID>/<GATEWAY_ID>/custom-codebuff"
+   ```
+   `freebuff2openai-cf` will automatically attach `cf-aig-metadata` (containing `account_id`, `agent_id`, and `model`) to every upstream completion request.
+
+---
+
 ## Local Development
 
 ```bash
@@ -149,3 +238,4 @@ npm run dev
 ```
 
 Then visit `http://localhost:8787/setup`.
+

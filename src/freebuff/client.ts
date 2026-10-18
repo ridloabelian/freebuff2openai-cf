@@ -690,24 +690,47 @@ export async function finalizeFreebuffRunChain(
 }
 
 /**
- * Dispatch the prepared chat completion request to `POST https://www.codebuff.com/api/v1/chat/completions`.
+ * Dispatch the prepared chat completion request to `POST https://www.codebuff.com/api/v1/chat/completions`
+ * (or through Cloudflare AI Gateway if `env.AI_GATEWAY_CODEBUFF_URL` is configured).
  */
 export async function sendUpstreamChatCompletions(
   env: Env,
   authToken: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  meta?: { accountId?: string; agentId?: string; modelId?: string }
 ): Promise<Response> {
-  const baseUrl = getCodebuffBaseUrl(env);
+  const gatewayUrl = env.AI_GATEWAY_CODEBUFF_URL?.trim().replace(/\/+$/, "");
+  const baseUrl = gatewayUrl || getCodebuffBaseUrl(env);
   const url = `${baseUrl}/api/v1/chat/completions`;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${authToken}`,
+    "Content-Type": "application/json",
+    Accept: "*/*",
+    "User-Agent": CHAT_COMPLETIONS_USER_AGENT,
+  };
+
+  const isAiGateway =
+    Boolean(gatewayUrl) || baseUrl.includes("gateway.ai.cloudflare.com");
+
+  if (isAiGateway) {
+    const cfAigToken = env.CF_AIG_TOKEN?.trim();
+    if (cfAigToken) {
+      headers["cf-aig-authorization"] = cfAigToken.startsWith("Bearer ")
+        ? cfAigToken
+        : `Bearer ${cfAigToken}`;
+    }
+    headers["cf-aig-metadata"] = JSON.stringify({
+      source: "freebuff2openai-cf",
+      account_id: meta?.accountId || "pool",
+      agent_id: meta?.agentId || "root",
+      model: meta?.modelId || String(payload.model || ""),
+    });
+  }
 
   return fetch(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      "Content-Type": "application/json",
-      Accept: "*/*",
-      "User-Agent": CHAT_COMPLETIONS_USER_AGENT,
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 }
